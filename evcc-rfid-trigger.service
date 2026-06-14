@@ -1,0 +1,17 @@
+[Unit]
+Description=EVCC RFID Trigger Service for Keba Wallbox
+After=network.target evcc.service
+Requires=evcc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/evcc-rfid-trigger.sh
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=evcc-rfid-trigger
+
+[Install]
+WantedBy=multi-user.target
