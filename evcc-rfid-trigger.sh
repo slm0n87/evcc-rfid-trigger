@@ -13,41 +13,43 @@ KEBA_IP="<your-keba-wallbox-ip>"
 RFID_ID="<your-rfid-id>"
 INTERVAL=10
 
-# Status variable for the edge trigger (prevents repetitive firing)
+# Tracking variable to ensure we only send ONE authorization per evcc charge request
 authorization_done=false
 
-echo "[$(date +'%F %T')] EVCC RFID Trigger started successfully. Monitoring loadpoint reasons..."
+echo "[$(date +'%F %T')] EVCC RFID Trigger started successfully. Monitoring deterministic state..."
 
 while true; do
     if evcc_response=$(curl -sS --connect-timeout 3 "$EVCC_API" 2>/dev/null); then
 
-        # We extract 'enabled', 'connected', and 'chargerStatusReason'
+        # We extract 'enabled', 'connected', and 'charging' booleans
         parsed_state=$(echo "$evcc_response" | jq -r '
             .loadpoints[0] as $lp
-            | "\($lp.enabled) \($lp.connected) \($lp.chargerStatusReason)"
+            | "\($lp.enabled) \($lp.connected) \($lp.charging)"
         ' 2>/dev/null)
 
         if [ -n "$parsed_state" ]; then
-            read -r lp_enabled connected status_reason <<< "$parsed_state"
+            read -r lp_enabled connected charging <<< "$parsed_state"
 
-            # CONDITION: Car is plugged in, Keba wants auth, AND evcc wants to charge (enabled=true)
-            if [ "$connected" = "true" ] && [ "$status_reason" = "waitingforauthorization" ] && [ "$lp_enabled" = "true" ]; then
+            # Condition: Car connected, evcc wants to charge, but power flow has NOT started yet
+            if [ "$connected" = "true" ] && [ "$lp_enabled" = "true" ] && [ "$charging" = "false" ]; then
 
                 if [ "$authorization_done" = false ]; then
-                    echo "[$(date +'%F %T')] Sun is ready (evcc enabled) & Wallbox needs auth. Injecting RFID token..."
+                    echo "[$(date +'%F %T')] evcc enabled charging but wallbox is blocked. Injecting RFID token..."
                     echo "start $RFID_ID" | nc -u -w 1 "$KEBA_IP" 7090
                     authorization_done=true
                 fi
 
             else
-                # RESET LOGIC:
-                # If evcc switches off/pauses (enabled=false) OR the car is unplugged,
-                # we reset the lock so it can fire again on the next sunny window.
+                # Reset if charging pauses or vehicle disconnects
                 if [ "$lp_enabled" = "false" ] || [ "$connected" = "false" ]; then
                     if [ "$authorization_done" = true ]; then
-                        echo "[$(date +'%F %T')] evcc paused charging or car disconnected. Readying trigger for next sun window."
+                        echo "[$(date +'%F %T')] evcc paused charging or car disconnected. Readying trigger for next cycle."
                         authorization_done=false
                     fi
+                fi
+                # Reset tracking once charging is actively running
+                if [ "$charging" = "true" ] && [ "$authorization_done" = true ]; then
+                    authorization_done=false
                 fi
             fi
         fi
